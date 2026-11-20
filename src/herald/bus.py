@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 from weakref import WeakKeyDictionary
 
+from .dead_letter import DeadEvent
 from .errors import BusClosedError
 
 T = TypeVar("T")
@@ -90,8 +91,34 @@ class EventBus:
 
     def publish(self, event: object) -> None:
         """Deliver ``event`` synchronously to every matching handler."""
-        for handler in self._snapshot(type(event)):
-            handler(event)
+        handlers = self._snapshot(type(event))
+        if not handlers:
+            if isinstance(event, DeadEvent):
+                self._logger.debug("Dropping dead letter for %r", event.event)
+                return
+            self._emit_dead_letter(DeadEvent(event))
+            return
+        for handler in handlers:
+            try:
+                handler(event)
+            except Exception as exc:
+                self._handle_failure(event, handler, exc)
+
+    def _handle_failure(self, event: object, handler: Handler, exc: Exception) -> None:
+        if isinstance(event, DeadEvent):
+            self._logger.error(
+                "DeadEvent handler %r failed for %r", handler, event.event, exc_info=exc
+            )
+            return
+        self._logger.error("Handler %r failed for %r", handler, event, exc_info=exc)
+        self._emit_dead_letter(DeadEvent(event, handler, exc))
+
+    def _emit_dead_letter(self, dead_event: DeadEvent) -> None:
+        self._logger.debug("Publishing dead letter for %r", dead_event.event)
+        try:
+            self.publish(dead_event)
+        except BusClosedError:
+            self._logger.debug("Bus closed while publishing dead letter")
 
     def _snapshot(self, event_type: type[Any]) -> tuple[Handler, ...]:
         with self._lock:
