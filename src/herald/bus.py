@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 from weakref import WeakKeyDictionary
@@ -73,6 +74,7 @@ class EventBus:
         self._entries: list[_Entry] = []
         self._owners: dict[int, list[Subscription]] = {}
         self._cache: WeakKeyDictionary[type[Any], tuple[Handler, ...]] = WeakKeyDictionary()
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=name)
         self._closed = False
 
     def subscribe(self, event_type: type[T], handler: Callable[[T], None]) -> Subscription:
@@ -129,6 +131,26 @@ class EventBus:
 
     def publish(self, event: object) -> None:
         """Deliver ``event`` synchronously to every matching handler."""
+        self._deliver(event)
+
+    def publish_async(self, event: object) -> Future[None]:
+        """Submit ``event`` for delivery on the bus executor."""
+        with self._lock:
+            if self._closed:
+                raise BusClosedError("cannot publish on a closed bus")
+            try:
+                return self._executor.submit(self._deliver, event)
+            except RuntimeError as exc:
+                raise BusClosedError("cannot publish on a closed bus") from exc
+
+    async def publish_awaitable(self, event: object) -> None:
+        """Deliver ``event`` on the executor and await its completion."""
+        import asyncio
+
+        future = self.publish_async(event)
+        await asyncio.wrap_future(future)
+
+    def _deliver(self, event: object) -> None:
         handlers = self._snapshot(type(event))
         if not handlers:
             if isinstance(event, DeadEvent):
@@ -182,3 +204,27 @@ class EventBus:
             ]
             self._cache.clear()
         self._logger.debug("Cancelled subscription %r", subscription)
+
+    def close(self, *, wait: bool = True) -> None:
+        """Close the bus, optionally waiting for in-flight async deliveries."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            executor = self._executor
+            if wait and self._is_worker_thread():
+                self._logger.warning(
+                    "close(wait=True) called from a bus worker thread; using wait=False"
+                )
+                wait = False
+        executor.shutdown(wait=wait, cancel_futures=not wait)
+        self._logger.debug("Closed event bus %r", self._name)
+
+    def _is_worker_thread(self) -> bool:
+        return threading.current_thread().name.startswith(f"{self._name}_")
+
+    def __enter__(self) -> EventBus:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
