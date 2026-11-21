@@ -5,6 +5,7 @@ from __future__ import annotations
 from .bus import EventBus, Subscription
 from .dead_letter import DeadEvent
 from .errors import BusClosedError, HeraldError, SubscriberDefinitionError
+from .subscriber import subscribe
 
 __version__ = "0.1.0"
 
@@ -16,4 +17,5 @@ __all__ = [
     "SubscriberDefinitionError",
     "Subscription",
     "__version__",
+    "subscribe",
 ]

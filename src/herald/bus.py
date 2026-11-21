@@ -11,6 +11,7 @@ from weakref import WeakKeyDictionary
 
 from .dead_letter import DeadEvent
 from .errors import BusClosedError
+from .subscriber import collect_subscribers
 
 T = TypeVar("T")
 Handler = Callable[[Any], None]
@@ -70,6 +71,7 @@ class EventBus:
         self._logger = logger if logger is not None else logging.getLogger(name)
         self._lock = threading.RLock()
         self._entries: list[_Entry] = []
+        self._owners: dict[int, list[Subscription]] = {}
         self._cache: WeakKeyDictionary[type[Any], tuple[Handler, ...]] = WeakKeyDictionary()
         self._closed = False
 
@@ -88,6 +90,42 @@ class EventBus:
             self._cache.clear()
         self._logger.debug("Subscribed %r to %r", typed_handler, event_type)
         return subscription
+
+    def register(self, obj: object) -> list[Subscription]:
+        """Register every ``@subscribe`` method on ``obj``."""
+        with self._lock:
+            if self._closed:
+                raise BusClosedError("cannot register on a closed bus")
+        discovered = collect_subscribers(obj)
+        with self._lock:
+            if self._closed:
+                raise BusClosedError("cannot register on a closed bus")
+            subscriptions: list[Subscription] = []
+            for event_type, handler in discovered:
+                typed_handler = cast(Handler, handler)
+                subscription = Subscription(self, event_type, typed_handler)
+                self._entries.append(_Entry(event_type, typed_handler, subscription))
+                subscriptions.append(subscription)
+            self._owners.setdefault(id(obj), []).extend(subscriptions)
+            self._cache.clear()
+        self._logger.debug("Registered %d subscription(s) for %r", len(subscriptions), obj)
+        return subscriptions
+
+    def unregister(self, obj: object) -> int:
+        """Cancel every subscription created by ``register(obj)``."""
+        with self._lock:
+            subscriptions = self._owners.pop(id(obj), [])
+            if not subscriptions:
+                return 0
+            cancelled = {id(subscription) for subscription in subscriptions if subscription._active}
+            for subscription in subscriptions:
+                subscription._active = False
+            self._entries = [
+                entry for entry in self._entries if id(entry.subscription) not in cancelled
+            ]
+            self._cache.clear()
+        self._logger.debug("Unregistered %d subscription(s) from %r", len(cancelled), obj)
+        return len(cancelled)
 
     def publish(self, event: object) -> None:
         """Deliver ``event`` synchronously to every matching handler."""
