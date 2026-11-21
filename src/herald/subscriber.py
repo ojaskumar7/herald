@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import Any, TypeVar, cast, get_type_hints, overload
+from typing import Any, ParamSpec, TypeVar, cast, get_type_hints, overload
 
 from .errors import SubscriberDefinitionError
 
 T = TypeVar("T")
+P = ParamSpec("P")
 Handler = Callable[..., None]
 
 _ATTR = "__herald_event_type__"
@@ -17,11 +18,11 @@ _INFERRED = object()
 
 
 @overload
-def subscribe(handler: Callable[[T], None], /) -> Callable[[T], None]: ...
+def subscribe(handler: Callable[P, None], /) -> Callable[P, None]: ...
 
 
 @overload
-def subscribe(event_type: type[T], /) -> Callable[[Callable[[T], None]], Callable[[T], None]]: ...
+def subscribe(event_type: type[T], /) -> Callable[[Callable[P, None]], Callable[P, None]]: ...
 
 
 def subscribe(arg: object) -> object:
