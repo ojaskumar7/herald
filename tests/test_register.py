@@ -245,3 +245,58 @@ def test_subscribe_requires_event_type_class() -> None:
 
     with pytest.raises(TypeError):
         bus.subscribe("Ping", lambda event: None)  # type: ignore[arg-type]
+
+
+def test_subscribe_decorator_rejects_invalid_argument() -> None:
+    with pytest.raises(TypeError):
+        subscribe(42)  # type: ignore[arg-type]
+
+
+def test_non_class_hint_raises() -> None:
+    class Listener:
+        @subscribe
+        def on_ping(self, event: list[Ping]) -> None:
+            pass
+
+    bus = EventBus()
+
+    with pytest.raises(SubscriberDefinitionError):
+        bus.register(Listener())
+
+
+def test_unresolvable_hint_raises() -> None:
+    class Listener:
+        @subscribe
+        def on_ping(self, event: UndefinedEvent) -> None:  # noqa: F821
+            pass
+
+    bus = EventBus()
+
+    with pytest.raises(SubscriberDefinitionError):
+        bus.register(Listener())
+
+
+def test_subscription_repr_and_read_only_properties() -> None:
+    bus = EventBus()
+    subscription = bus.subscribe(Ping, lambda event: None)
+
+    assert "Ping" in repr(subscription)
+    assert subscription.event_type is Ping
+    assert subscription.active is True
+    with pytest.raises(AttributeError):
+        subscription.active = False  # type: ignore[misc]
+
+
+def test_invalid_max_workers() -> None:
+    for value in (0, -1, True, 1.5, "4"):
+        with pytest.raises(ValueError):
+            EventBus(max_workers=value)  # type: ignore[arg-type]
+
+
+def test_custom_logger_is_used() -> None:
+    import logging
+
+    logger = logging.getLogger("custom-herald-test")
+    bus = EventBus(logger=logger)
+
+    assert bus._logger is logger
